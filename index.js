@@ -186,14 +186,15 @@ if (!pet.petName || !pet.category || !pet.ownerEmail) {
 
 
 // UPDATE PET
-
 app.patch("/pets/:id", verifyToken, async (req, res) => {
-  const db = await getDb();
+    const db = await getDb();
 
   const pet = await db.collection("pets").findOne({ _id: new ObjectId(req.params.id) });
-if (!pet) return res.status(404).json({ message: "Pet not found" });
+
+  if (!pet) return res.status(404).json({ message: "Pet not found" });
   
 if (!isOwner(pet, req.user.email)) return res.status(403).json({ message: "Not authorized" });
+
 const result = await db.collection("pets").updateOne(
     { _id: new ObjectId(req.params.id) },
   
@@ -264,7 +265,10 @@ const { petId, email } = req.query;
 if (petId) query.petId = petId;
 
 
-  if (email) query.userEmail = email;
+  
+
+
+if (email) query.userEmail = email;
 const result = await db.collection("adoptions").find(query).toArray();
   res.json(result);
 });
@@ -299,6 +303,8 @@ app.patch("/adoption/:id", verifyToken, async (req, res) => {
   
   
   if (!request) return res.status(404).json({ message: "Request not found" });
+  
+  
   if (status === "approved") {
  const already = await db.collection("adoptions").findOne({ petId: request.petId, status: "approved" });
    
