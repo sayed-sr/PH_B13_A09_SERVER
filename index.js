@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
+
 const dotenv = require("dotenv");
+
 const { MongoClient, ObjectId, ServerApiVersion } = require("mongodb");
 const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 
@@ -47,6 +49,7 @@ function getJWKS() {
 
   if (!JWKS) {
     JWKS = createRemoteJWKSet(
+
  new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
 
 
@@ -67,6 +70,9 @@ const verifyToken = async (req, res, next) => {
 
   const authHeader = req.headers.authorization;
 if (!authHeader) return res.status(401).json({ message: "Unauthorized" });
+
+
+
   const token = authHeader.split(" ")[1];
   
   
@@ -121,6 +127,8 @@ app.get("/pets", async (req, res) => {
   query.$or = [
   { petName: { $regex: search, $options: "i" } },
       
+
+
   { breed: { $regex: search, $options: "i" } },
     ];
   }
@@ -129,7 +137,9 @@ app.get("/pets", async (req, res) => {
 
 
  const pets = await db.collection("pets").find(query).skip(skip).limit(parseInt(limit)).toArray();
-  const total = await db.collection("pets").countDocuments(query);
+ 
+ 
+ const total = await db.collection("pets").countDocuments(query);
 
 
 
