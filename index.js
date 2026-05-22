@@ -72,7 +72,7 @@ const isOwner = (pet, userEmail) => {
 // ======================
 async function run() {
   try {
-    // await client.connect();
+    await client.connect();
 
     const db = client.db("happypet");
 
@@ -375,6 +375,4 @@ app.get("/", (req, res) => {
   res.send("Server is running fine");
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+module.exports = app;
