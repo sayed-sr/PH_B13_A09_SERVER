@@ -352,14 +352,14 @@ const db = await getDb();
 
 
   const pets = await db.collection("pets").find({ ownerEmail: req.params.email }).toArray();
-  
+
  
  
-  const total = pets.length;
+const total = pets.length;
   const adopted = pets.filter((p) => p.status === "adopted").length;
 
 
-  res.json({ total, adopted, available: total - adopted });
+res.json({ total, adopted, available: total - adopted });
 });
 
 
