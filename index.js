@@ -352,6 +352,7 @@ const db = await getDb();
 
 
   const pets = await db.collection("pets").find({ ownerEmail: req.params.email }).toArray();
+  
  
  
   const total = pets.length;
