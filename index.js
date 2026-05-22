@@ -1,12 +1,3 @@
-// ======================
-// Optional DNS Fix (commented)
-// ======================
-// const dns = require("node:dns");
-// dns.setServers(["8.8.8.8", "8.8.4.4"]);
-
-// ======================
-// Core Imports
-// ======================
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
@@ -16,7 +7,6 @@ const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -32,27 +22,37 @@ const client = new MongoClient(process.env.MONGODB_URI, {
   },
 });
 
+let db;
+async function getDb() {
+  if (!db) {
+    await client.connect();
+    db = client.db("happypet");
+  }
+  return db;
+}
+
 // ======================
 // JWT Setup
 // ======================
-const JWKS = createRemoteJWKSet(
-  new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
-);
+let JWKS;
+function getJWKS() {
+  if (!JWKS) {
+    JWKS = createRemoteJWKSet(
+      new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
+    );
+  }
+  return JWKS;
+}
 
 // ======================
 // Auth Middleware
 // ======================
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-
-  if (!authHeader) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
-
+  if (!authHeader) return res.status(401).json({ message: "Unauthorized" });
   const token = authHeader.split(" ")[1];
-
   try {
-    const { payload } = await jwtVerify(token, JWKS);
+    const { payload } = await jwtVerify(token, getJWKS());
     req.user = payload;
     next();
   } catch (err) {
@@ -60,97 +60,63 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
-// ======================
-// Helper
-// ======================
-const isOwner = (pet, userEmail) => {
-  return pet.ownerEmail === userEmail;
-};
+const isOwner = (pet, userEmail) => pet.ownerEmail === userEmail;
 
 // ======================
-// Main Function
+// ROOT
 // ======================
-async function run() {
+app.get("/", (req, res) => {
+  res.send("Server is running fine");
+});
+
+// ======================
+// FEATURED PETS
+// ======================
+app.get("/featured", async (req, res) => {
+  const db = await getDb();
+  const result = await db.collection("pets").find().limit(6).toArray();
+  res.json(result);
+});
+
+// ======================
+// GET ALL PETS
+// ======================
+app.get("/pets", async (req, res) => {
+  const db = await getDb();
+  const { page = 1, limit = 10, search = "", category } = req.query;
+  const query = {};
+  if (search) {
+    query.$or = [
+      { petName: { $regex: search, $options: "i" } },
+      { breed: { $regex: search, $options: "i" } },
+    ];
+  }
+  if (category) query.category = category;
+  const skip = (page - 1) * limit;
+  const pets = await db.collection("pets").find(query).skip(skip).limit(parseInt(limit)).toArray();
+  const total = await db.collection("pets").countDocuments(query);
+  res.json({ success: true, total, page: Number(page), totalPages: Math.ceil(total / limit), data: pets });
+});
+
+// ======================
+// GET SINGLE PET
+// ======================
+app.get("/pets/:id", async (req, res) => {
+  const db = await getDb();
+  const result = await db.collection("pets").findOne({ _id: new ObjectId(req.params.id) });
+  res.json(result);
+});
+
+// ======================
+// ADD PET
+// ======================
+app.post("/pets", verifyToken, async (req, res) => {
   try {
-    await client.connect();
-
-    const db = client.db("happypet");
-
-    const petCollection = db.collection("pets");
-    const adoptionCollection = db.collection("adoptions");
-
-    // ======================
-    // FEATURED PETS
-    // ======================
-    app.get("/featured", async (req, res) => {
-      const result = await petCollection.find().limit(6).toArray();
-      res.json(result);
-    });
-
-    // ======================
-    // GET ALL PETS (SEARCH + FILTER + PAGINATION)
-    // ======================
-    app.get("/pets", async (req, res) => {
-      const { page = 1, limit = 10, search = "", category } = req.query;
-
-      const query = {};
-
-      if (search) {
-        query.$or = [
-          { petName: { $regex: search, $options: "i" } },
-          { breed: { $regex: search, $options: "i" } },
-        ];
-      }
-
-      if (category) {
-        query.category = category;
-      }
-
-      const skip = (page - 1) * limit;
-
-      const pets = await petCollection
-        .find(query)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .toArray();
-
-      const total = await petCollection.countDocuments(query);
-
-      res.json({
-        success: true,
-        total,
-        page: Number(page),
-        totalPages: Math.ceil(total / limit),
-        data: pets,
-      });
-    });
-
-    // ======================
-    // GET SINGLE PET
-    // ======================
-    app.get("/pets/:id", async (req, res) => {
-      const result = await petCollection.findOne({
-        _id: new ObjectId(req.params.id),
-      });
-
-      res.json(result);
-    });
-
-    // ======================
-    // ADD PET (PRIVATE)
-    // ======================
-   app.post("/pets", verifyToken, async (req, res) => {
-  try {
+    const db = await getDb();
     const pet = req.body;
-
-    // ✅ Validation (VERY IMPORTANT)
     if (!pet.petName || !pet.category || !pet.ownerEmail) {
-      return res.status(400).json({
-        message: "Missing required pet fields",
-      });
+      return res.status(400).json({ message: "Missing required pet fields" });
     }
-
-    // ✅ Normalize data
     const newPet = {
       ...pet,
       age: Number(pet.age),
@@ -158,221 +124,127 @@ async function run() {
       status: pet.status || "available",
       createdAt: new Date(),
     };
-
-    const result = await petCollection.insertOne(newPet);
-
-    return res.status(201).json({
-      success: true,
-      insertedId: result.insertedId,
-    });
+    const result = await db.collection("pets").insertOne(newPet);
+    return res.status(201).json({ success: true, insertedId: result.insertedId });
   } catch (error) {
-    return res.status(500).json({
-      message: "Server error while adding pet",
-    });
+    return res.status(500).json({ message: "Server error while adding pet" });
   }
 });
-    // ======================
-    // UPDATE PET (OWNER ONLY)
-    // ======================
-    app.patch("/pets/:id", verifyToken, async (req, res) => {
-      const petId = req.params.id;
 
-      const pet = await petCollection.findOne({
-        _id: new ObjectId(petId),
-      });
+// ======================
+// UPDATE PET
+// ======================
+app.patch("/pets/:id", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const pet = await db.collection("pets").findOne({ _id: new ObjectId(req.params.id) });
+  if (!pet) return res.status(404).json({ message: "Pet not found" });
+  if (!isOwner(pet, req.user.email)) return res.status(403).json({ message: "Not authorized" });
+  const result = await db.collection("pets").updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: req.body }
+  );
+  res.json(result);
+});
 
-      if (!pet) {
-        return res.status(404).json({ message: "Pet not found" });
-      }
+// ======================
+// DELETE PET
+// ======================
+app.delete("/pets/:id", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const pet = await db.collection("pets").findOne({ _id: new ObjectId(req.params.id) });
+  if (!pet) return res.status(404).json({ message: "Pet not found" });
+  if (!isOwner(pet, req.user.email)) return res.status(403).json({ message: "Not authorized" });
+  const result = await db.collection("pets").deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json(result);
+});
 
-      if (!isOwner(pet, req.user.email)) {
-        return res.status(403).json({ message: "Not authorized" });
-      }
+// ======================
+// ADOPTION REQUEST
+// ======================
+app.post("/adoption", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const pet = await db.collection("pets").findOne({ _id: new ObjectId(req.body.petId) });
+  if (!pet) return res.status(404).json({ message: "Pet not found" });
+  if (pet.status === "adopted") return res.status(400).json({ message: "Pet already adopted" });
+  if (pet.ownerEmail === req.user.email) return res.status(403).json({ message: "Owner cannot adopt own pet" });
+  const result = await db.collection("adoptions").insertOne(req.body);
+  res.json(result);
+});
 
-      const result = await petCollection.updateOne(
-        { _id: new ObjectId(petId) },
-        { $set: req.body }
-      );
+// ======================
+// GET ADOPTIONS
+// ======================
+app.get("/adoption", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const { petId, email } = req.query;
+  const query = {};
+  if (petId) query.petId = petId;
+  if (email) query.userEmail = email;
+  const result = await db.collection("adoptions").find(query).toArray();
+  res.json(result);
+});
 
-      res.json(result);
-    });
+// ======================
+// DELETE ADOPTION
+// ======================
+app.delete("/adoption/:id", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const result = await db.collection("adoptions").deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json(result);
+});
 
-    // ======================
-    // DELETE PET (OWNER ONLY)
-    // ======================
-    app.delete("/pets/:id", verifyToken, async (req, res) => {
-      const petId = req.params.id;
-
-      const pet = await petCollection.findOne({
-        _id: new ObjectId(petId),
-      });
-
-      if (!pet) {
-        return res.status(404).json({ message: "Pet not found" });
-      }
-
-      if (!isOwner(pet, req.user.email)) {
-        return res.status(403).json({ message: "Not authorized" });
-      }
-
-      const result = await petCollection.deleteOne({
-        _id: new ObjectId(petId),
-      });
-
-      res.json(result);
-    });
-
-    // ======================
-    // ADOPTION REQUEST (SAFE)
-    // ======================
-    app.post("/adoption", verifyToken, async (req, res) => {
-      const pet = await petCollection.findOne({
-        _id: new ObjectId(req.body.petId),
-      });
-
-      if (!pet) {
-        return res.status(404).json({ message: "Pet not found" });
-      }
-
-      if (pet.status === "adopted") {
-        return res.status(400).json({
-          message: "Pet already adopted",
-        });
-      }
-
-      if (pet.ownerEmail === req.user.email) {
-        return res.status(403).json({
-          message: "Owner cannot adopt own pet",
-        });
-      }
-
-      const result = await adoptionCollection.insertOne(req.body);
-      res.json(result);
-    });
-
-    // ======================
-    // GET ADOPTIONS
-    // ======================
-    app.get("/adoption", verifyToken, async (req, res) => {
-      const { petId, email } = req.query;
-
-      const query = {};
-
-      if (petId) query.petId = petId;
-      if (email) query.userEmail = email;
-
-      const result = await adoptionCollection.find(query).toArray();
-      res.json(result);
-    });
-
-    // ======================
-    // DELETE ADOPTION
-    // ======================
-    app.delete("/adoption/:id", verifyToken, async (req, res) => {
-      const result = await adoptionCollection.deleteOne({
-        _id: new ObjectId(req.params.id),
-      });
-
-      res.json(result);
-    });
-
-    // ======================
-    // APPROVE / REJECT ADOPTION
-    // ======================
-    app.patch("/adoption/:id", verifyToken, async (req, res) => {
-      const { status } = req.body;
-
-      const request = await adoptionCollection.findOne({
-        _id: new ObjectId(req.params.id),
-      });
-
-      if (!request) {
-        return res.status(404).json({ message: "Request not found" });
-      }
-
-      if (status === "approved") {
-        const already = await adoptionCollection.findOne({
-          petId: request.petId,
-          status: "approved",
-        });
-
-        if (already) {
-          return res.status(400).json({
-            message: "This pet is already adopted",
-          });
-        }
-
-        await petCollection.updateOne(
-          { _id: new ObjectId(request.petId) },
-          { $set: { status: "adopted" } }
-        );
-
-        await adoptionCollection.updateMany(
-          {
-            petId: request.petId,
-            _id: { $ne: new ObjectId(req.params.id) },
-          },
-          { $set: { status: "rejected" } }
-        );
-      }
-
-      const result = await adoptionCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { status } }
-      );
-
-      res.json(result);
-    });
-
-    // ======================
-    // MY PETS
-    // ======================
-    app.get("/my-pets/:email", verifyToken, async (req, res) => {
-      const result = await petCollection
-        .find({ ownerEmail: req.params.email })
-        .toArray();
-
-      res.json(result);
-    });
-
-    // ======================
-    // STATS
-    // ======================
-    app.get("/my-pets-stats/:email", verifyToken, async (req, res) => {
-      const pets = await petCollection
-        .find({ ownerEmail: req.params.email })
-        .toArray();
-
-      const total = pets.length;
-      const adopted = pets.filter((p) => p.status === "adopted").length;
-
-      res.json({
-        total,
-        adopted,
-        available: total - adopted,
-      });
-    });
-
-    // ======================
-    // 404
-    // ======================
-    app.use((req, res) => {
-      res.status(404).json({ message: "Route not found" });
-    });
-
-    console.log("MongoDB connected successfully");
-  } finally {
-    // keep alive
+// ======================
+// APPROVE / REJECT ADOPTION
+// ======================
+app.patch("/adoption/:id", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const { status } = req.body;
+  const request = await db.collection("adoptions").findOne({ _id: new ObjectId(req.params.id) });
+  if (!request) return res.status(404).json({ message: "Request not found" });
+  if (status === "approved") {
+    const already = await db.collection("adoptions").findOne({ petId: request.petId, status: "approved" });
+    if (already) return res.status(400).json({ message: "This pet is already adopted" });
+    await db.collection("pets").updateOne(
+      { _id: new ObjectId(request.petId) },
+      { $set: { status: "adopted" } }
+    );
+    await db.collection("adoptions").updateMany(
+      { petId: request.petId, _id: { $ne: new ObjectId(req.params.id) } },
+      { $set: { status: "rejected" } }
+    );
   }
-}
-
-run().catch(console.dir);
+  const result = await db.collection("adoptions").updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: { status } }
+  );
+  res.json(result);
+});
 
 // ======================
-// SERVER START
+// MY PETS
 // ======================
-app.get("/", (req, res) => {
-  res.send("Server is running fine");
+app.get("/my-pets/:email", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const result = await db.collection("pets").find({ ownerEmail: req.params.email }).toArray();
+  res.json(result);
+});
+
+// ======================
+// STATS
+// ======================
+app.get("/my-pets-stats/:email", verifyToken, async (req, res) => {
+  const db = await getDb();
+  const pets = await db.collection("pets").find({ ownerEmail: req.params.email }).toArray();
+  const total = pets.length;
+  const adopted = pets.filter((p) => p.status === "adopted").length;
+  res.json({ total, adopted, available: total - adopted });
+});
+
+// ======================
+// 404
+// ======================
+app.use((req, res) => {
+  res.status(404).json({ message: "Route not found" });
 });
 
 module.exports = app;
